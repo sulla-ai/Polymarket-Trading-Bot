@@ -8,6 +8,7 @@ import { logger } from './logs';
 import { consoleLog } from './console_log';
 import type { WhaleAPI } from '../whales/whale_api';
 import type { Engine } from '../core/engine';
+import { CopyTradeStrategy } from '../strategies/copy_trading/copy_trade_strategy';
 
 /* ──────────────────────────────────────────────────────────────
    Strategy catalog — rich metadata used by the Strategies tab
@@ -361,6 +362,121 @@ function getStrategyCatalog(): StrategyCatalogEntry[] {
       idealFor: 'Traders who want to ride big moves in event markets',
     },
     {
+      id: 'copy_trade',
+      name: 'Copy Trade (Whale Mirroring)',
+      category: 'Copy Trading',
+      riskLevel: 'Medium',
+      version: '1.0.0',
+      author: 'Built-in',
+      tags: ['whale-tracking', 'copy-trading', 'address-based', 'configurable-risk', 'mirror-or-inverse'],
+      description:
+        'Automatically mirrors (or inverses) trades made by specified whale wallet addresses on Polymarket. Polls the data API for new whale trades and replicates them with full risk management.',
+      longDescription:
+        'This strategy watches one or more whale wallet addresses and copies their trades in real-time. ' +
+        'When a whale buys YES on a market, the strategy opens a corresponding position. When the whale exits, the strategy can automatically close. ' +
+        'Supports two copy modes: "mirror" (trade the same direction) or "inverse" (fade the whale). ' +
+        'Three sizing modes let you control position size: fixed dollar amount, proportional to whale size, or Kelly criterion. ' +
+        'Comprehensive risk controls include per-whale performance tracking, consecutive-loss cooldowns, drawdown pauses, daily volume caps, and per-market exposure limits. ' +
+        'Whales with poor win rates are automatically paused. All whale addresses can be managed live from the dashboard.',
+      howItWorks: [
+        'Polls the Polymarket data API every N seconds for trades by tracked whale addresses',
+        'Filters trades by age, market blacklist, and minimum size',
+        'Generates BUY/SELL signals matching (or inversing) each whale trade',
+        'Sizes positions using fixed, proportional, or Kelly criterion modes',
+        'Tracks per-whale performance (win rate, PnL, consecutive losses)',
+        'Manages exits via take-profit, stop-loss, trailing stop, time exit, and whale-exit detection',
+        'Pauses copying whales that fall below minimum win rate threshold',
+      ],
+      parameters: {
+        copyMode: 'mirror or inverse — follow or fade the whale',
+        sizeMode: 'fixed / proportional / kelly — how to size positions',
+        fixedSize: '$10 per copy trade (fixed mode)',
+        pollInterval: '30 seconds between whale trade polls',
+        stopLoss: '500 bps (5%) — maximum loss before auto-exit',
+        takeProfit: '300 bps (3%) — profit target for auto-exit',
+        trailingStop: '150 bps — trailing stop after activation',
+        maxDrawdown: '15% — pause all trading if drawdown exceeds this',
+      },
+      idealFor: 'Traders who want to leverage whale alpha by following profitable wallets',
+      entryLogic: [
+        'Fetches recent trades from each tracked whale address via the Polymarket data API',
+        'Filters out trades older than max_trade_age_seconds (default 5 minutes)',
+        'Skips trades on blacklisted markets or below minimum size',
+        'In mirror mode: copies the whale\'s exact direction (BUY YES → BUY YES)',
+        'In inverse mode: takes the opposite side (whale BUY YES → SELL / BUY NO)',
+        'Checks per-whale performance — skips whales below min_whale_win_rate',
+        'Checks daily volume cap and max open positions before entering',
+      ],
+      exitRules: [
+        {
+          name: 'Take Profit',
+          description: 'Closes position when PnL exceeds take_profit_bps above entry price.',
+          configKeys: ['take_profit_bps'],
+        },
+        {
+          name: 'Stop Loss',
+          description: 'Closes position when PnL drops below stop_loss_bps from entry price.',
+          configKeys: ['stop_loss_bps'],
+        },
+        {
+          name: 'Trailing Stop',
+          description: 'Activates after trailing_activate_bps profit, then exits if price retraces by trailing_stop_bps from the high-water mark.',
+          configKeys: ['trailing_stop_bps', 'trailing_activate_bps'],
+        },
+        {
+          name: 'Time Exit',
+          description: 'Closes position after time_exit_minutes regardless of PnL to prevent capital lock-up.',
+          configKeys: ['time_exit_minutes'],
+        },
+        {
+          name: 'Whale Exit Detection',
+          description: 'When the whale exits their position (detected via API polling), automatically closes the copy position.',
+          configKeys: ['exit_on_whale_exit'],
+        },
+      ],
+      positionSizing: [
+        'Fixed mode: every copy trade uses a flat dollar amount (fixed_size)',
+        'Proportional mode: position size = whale_size × proportional_factor',
+        'Kelly mode: sizes based on whale win rate and average edge',
+        'All sizes capped at max_position_size_usd per trade',
+        'Per-market exposure capped at max_exposure_per_market_usd',
+        'Total daily volume capped at max_daily_volume_usd',
+        'Maximum simultaneous positions enforced by max_open_positions',
+      ],
+      riskControls: [
+        { name: 'Per-Whale Win Rate', description: 'Pauses copying a whale if their win rate drops below threshold', configKey: 'min_whale_win_rate' },
+        { name: 'Consecutive Loss Cooldown', description: 'Pauses a whale after N consecutive losing trades for a configurable cooldown period', configKey: 'max_consecutive_losses' },
+        { name: 'Max Drawdown', description: 'Pauses all copy trading if total drawdown exceeds threshold', configKey: 'max_drawdown_pct' },
+        { name: 'Daily Volume Cap', description: 'Stops opening new positions once daily volume limit is reached', configKey: 'max_daily_volume_usd' },
+        { name: 'Max Open Positions', description: 'Limits concurrent open positions to prevent overexposure', configKey: 'max_open_positions' },
+        { name: 'Per-Market Exposure', description: 'Caps exposure to any single market', configKey: 'max_exposure_per_market_usd' },
+        { name: 'Trade Age Filter', description: 'Ignores whale trades older than max_trade_age_seconds to avoid stale signals', configKey: 'max_trade_age_seconds' },
+        { name: 'Market Blacklist', description: 'Skip specific markets that should not be copied' },
+      ],
+      configSchema: [
+        { key: 'copy_mode', label: 'Copy Mode', type: 'string', default: 'mirror', description: 'mirror = follow whale, inverse = fade whale', group: 'General' },
+        { key: 'size_mode', label: 'Size Mode', type: 'string', default: 'fixed', description: 'How to size copy positions: fixed, proportional, or kelly', group: 'General' },
+        { key: 'fixed_size', label: 'Fixed Size', type: 'number', default: 10, unit: 'USD', description: 'Dollar amount per trade in fixed mode', group: 'Sizing' },
+        { key: 'proportional_factor', label: 'Proportional Factor', type: 'number', default: 0.1, description: 'Fraction of whale size to copy in proportional mode', group: 'Sizing' },
+        { key: 'max_position_size_usd', label: 'Max Position Size', type: 'number', default: 200, unit: 'USD', description: 'Hard cap on any single copy trade', group: 'Sizing' },
+        { key: 'max_exposure_per_market_usd', label: 'Max Market Exposure', type: 'number', default: 500, unit: 'USD', description: 'Max total exposure per market', group: 'Sizing' },
+        { key: 'max_daily_volume_usd', label: 'Max Daily Volume', type: 'number', default: 2000, unit: 'USD', description: 'Daily volume cap across all copy trades', group: 'Sizing' },
+        { key: 'max_open_positions', label: 'Max Open Positions', type: 'number', default: 10, description: 'Maximum concurrent positions', group: 'Sizing' },
+        { key: 'poll_interval_seconds', label: 'Poll Interval', type: 'number', default: 30, unit: 'sec', description: 'Seconds between whale trade API polls', group: 'Polling' },
+        { key: 'max_trade_age_seconds', label: 'Max Trade Age', type: 'number', default: 300, unit: 'sec', description: 'Ignore whale trades older than this', group: 'Polling' },
+        { key: 'min_trade_size_usd', label: 'Min Trade Size', type: 'number', default: 10, unit: 'USD', description: 'Ignore whale trades smaller than this', group: 'Polling' },
+        { key: 'stop_loss_bps', label: 'Stop Loss', type: 'number', default: 500, unit: 'bps', description: 'Close position on this much loss', group: 'Exit' },
+        { key: 'take_profit_bps', label: 'Take Profit', type: 'number', default: 300, unit: 'bps', description: 'Close position on this much profit', group: 'Exit' },
+        { key: 'trailing_stop_bps', label: 'Trailing Stop', type: 'number', default: 150, unit: 'bps', description: 'Trailing stop distance from high-water mark', group: 'Exit' },
+        { key: 'trailing_activate_bps', label: 'Trailing Activation', type: 'number', default: 200, unit: 'bps', description: 'Profit needed before trailing stop activates', group: 'Exit' },
+        { key: 'time_exit_minutes', label: 'Time Exit', type: 'number', default: 120, unit: 'min', description: 'Close position after this many minutes', group: 'Exit' },
+        { key: 'min_whale_win_rate', label: 'Min Whale Win Rate', type: 'number', default: 0.50, description: 'Pause copying whale if win rate drops below this', group: 'Risk' },
+        { key: 'max_drawdown_pct', label: 'Max Drawdown', type: 'number', default: 0.15, description: 'Pause all trading if drawdown exceeds this %', group: 'Risk' },
+        { key: 'max_consecutive_losses', label: 'Max Consecutive Losses', type: 'number', default: 5, description: 'Pause whale after this many losses in a row', group: 'Risk' },
+        { key: 'cooldown_after_loss_seconds', label: 'Loss Cooldown', type: 'number', default: 300, unit: 'sec', description: 'Cooldown period after consecutive loss limit', group: 'Risk' },
+      ],
+    },
+    {
       id: 'user_defined',
       name: 'User-Defined Strategy',
       category: 'Custom',
@@ -599,6 +715,13 @@ export class DashboardServer {
       }
     }
     return prices;
+  }
+
+  /** Get all running CopyTradeStrategy instances from the engine */
+  private getCopyTradeInstances(): CopyTradeStrategy[] {
+    if (!this.engine) return [];
+    return this.engine.getStrategiesByName('copy_trade')
+      .filter((s): s is CopyTradeStrategy => s instanceof CopyTradeStrategy);
   }
 
   start(): void {
@@ -927,6 +1050,83 @@ export class DashboardServer {
             }))
         : [];
       json(res, 200, { ...entry, liveWallets: liveConfig });
+      return;
+    }
+
+    /* ─── JSON: Copy Trade whale addresses — GET ─── */
+    if (path === '/api/copy-trade/whales' && method === 'GET') {
+      const instances = this.getCopyTradeInstances();
+      if (instances.length === 0) {
+        json(res, 200, { ok: true, addresses: [], stats: null, whalePerformance: [] });
+        return;
+      }
+      const inst = instances[0];
+      const addrs = inst.getWhaleAddresses();
+      const stats = inst.getStats();
+      const perfMap = inst.getWhalePerformance();
+      const whalePerformance = addrs.map((a: string) => {
+        const p = perfMap.get(a.toLowerCase());
+        return {
+          address: a,
+          tradesCopied: p?.tradesCopied ?? 0,
+          wins: p?.wins ?? 0,
+          losses: p?.losses ?? 0,
+          winRate: p && (p.wins + p.losses) > 0 ? p.wins / (p.wins + p.losses) : 0,
+          totalPnlBps: p?.totalPnlBps ?? 0,
+          consecutiveLosses: p?.consecutiveLosses ?? 0,
+          paused: p ? p.pausedUntil > Date.now() : false,
+        };
+      });
+      json(res, 200, { ok: true, addresses: addrs, stats, whalePerformance });
+      return;
+    }
+
+    /* ─── JSON: Copy Trade whale addresses — POST (add) ─── */
+    if (path === '/api/copy-trade/whales' && method === 'POST') {
+      const body = await readBody(req);
+      const address = (body.address as string || '').trim();
+      if (!address) {
+        json(res, 400, { ok: false, error: 'Missing "address" field' });
+        return;
+      }
+      const instances = this.getCopyTradeInstances();
+      if (instances.length === 0) {
+        json(res, 404, { ok: false, error: 'No copy_trade strategy instances running' });
+        return;
+      }
+      let added = false;
+      for (const inst of instances) {
+        if (inst.addWhaleAddress(address)) added = true;
+      }
+      if (added) {
+        json(res, 200, { ok: true, message: `Whale address "${address}" added to ${instances.length} copy trade instance(s)` });
+      } else {
+        json(res, 409, { ok: false, error: `Address "${address}" is already being tracked` });
+      }
+      return;
+    }
+
+    /* ─── JSON: Copy Trade whale addresses — DELETE (remove) ─── */
+    if (path.startsWith('/api/copy-trade/whales/') && method === 'DELETE') {
+      const address = decodeURIComponent(path.slice('/api/copy-trade/whales/'.length)).trim();
+      if (!address) {
+        json(res, 400, { ok: false, error: 'Missing address in URL' });
+        return;
+      }
+      const instances = this.getCopyTradeInstances();
+      if (instances.length === 0) {
+        json(res, 404, { ok: false, error: 'No copy_trade strategy instances running' });
+        return;
+      }
+      let removed = false;
+      for (const inst of instances) {
+        if (inst.removeWhaleAddress(address)) removed = true;
+      }
+      if (removed) {
+        json(res, 200, { ok: true, message: `Whale address "${address}" removed` });
+      } else {
+        json(res, 404, { ok: false, error: `Address "${address}" not found` });
+      }
       return;
     }
 
@@ -1311,6 +1511,36 @@ td{font-size:12px;padding:5px 0;border-bottom:1px solid var(--border)}.o-YES{col
 .live-wallet-card .lw-id{font-weight:700;font-size:13px}
 .live-wallet-card .lw-stats{display:flex;gap:16px;font-size:12px;color:var(--muted)}
 
+/* ═══ Whale Address Management ═══ */
+.whale-mgmt{margin-top:20px}
+.whale-mgmt-section{background:var(--surface);border:1px solid var(--border);border-radius:var(--radius);padding:20px}
+.whale-add-form{display:flex;gap:10px;margin-bottom:16px}
+.whale-add-form input{flex:1;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:10px 14px;color:var(--text);font-size:13px;font-family:monospace;outline:none;transition:border-color .2s}
+.whale-add-form input:focus{border-color:var(--accent)}
+.whale-add-form input::placeholder{color:var(--muted);font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif}
+.whale-add-btn{background:var(--accent2);color:#fff;border:none;border-radius:var(--radius-sm);padding:10px 20px;font-size:13px;font-weight:600;cursor:pointer;white-space:nowrap;transition:background .2s}
+.whale-add-btn:hover{background:#5558e6}
+.whale-add-btn:disabled{opacity:.5;cursor:not-allowed}
+.whale-list{display:flex;flex-direction:column;gap:8px}
+.whale-item{display:flex;align-items:center;justify-content:space-between;background:var(--surface2);border:1px solid var(--border);border-radius:var(--radius-sm);padding:12px 16px;transition:border-color .2s}
+.whale-item:hover{border-color:var(--accent)}
+.whale-item-left{display:flex;align-items:center;gap:12px;flex:1;min-width:0}
+.whale-addr{font-family:monospace;font-size:13px;color:var(--accent);word-break:break-all}
+.whale-stats{display:flex;gap:12px;align-items:center;flex-shrink:0}
+.whale-stat{font-size:11px;color:var(--muted);white-space:nowrap}
+.whale-stat .ws-val{font-weight:700;color:var(--text)}
+.whale-stat.positive .ws-val{color:var(--green)}
+.whale-stat.negative .ws-val{color:var(--red)}
+.whale-badge{font-size:10px;padding:2px 8px;border-radius:10px;font-weight:600;text-transform:uppercase;letter-spacing:.3px}
+.whale-badge.active{background:rgba(0,214,143,.12);color:var(--green)}
+.whale-badge.paused{background:rgba(255,193,7,.12);color:var(--yellow)}
+.whale-remove-btn{background:transparent;border:1px solid var(--border);border-radius:var(--radius-sm);padding:6px 12px;color:var(--red);font-size:11px;cursor:pointer;transition:all .2s;margin-left:12px}
+.whale-remove-btn:hover{background:rgba(255,77,106,.1);border-color:var(--red)}
+.whale-empty{color:var(--muted);font-size:13px;font-style:italic;text-align:center;padding:24px}
+.whale-msg{font-size:12px;padding:8px 12px;border-radius:var(--radius-sm);margin-bottom:12px;display:none}
+.whale-msg.ok{background:rgba(0,214,143,.1);color:var(--green);display:block}
+.whale-msg.err{background:rgba(255,77,106,.1);color:var(--red);display:block}
+
 /* ═══ Footer ═══ */
 footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-top:1px solid var(--border)}
 
@@ -1580,6 +1810,24 @@ footer{text-align:center;padding:24px;color:var(--muted);font-size:11px;border-t
 
     <!-- Live Wallets -->
     <div id="sd-live-wallets-section" style="margin-bottom:20px"></div>
+
+    <!-- Whale Address Management (copy_trade only) -->
+    <div id="sd-whale-mgmt" class="whale-mgmt" style="display:none;margin-bottom:20px">
+      <div class="whale-mgmt-section">
+        <h4 style="font-size:14px;font-weight:700;margin-bottom:14px;display:flex;align-items:center;gap:8px">
+          <span class="sd-icon">\uD83D\uDC33</span> Whale Addresses
+          <span id="whale-count" style="font-size:12px;color:var(--muted);font-weight:400"></span>
+        </h4>
+        <div id="whale-msg" class="whale-msg"></div>
+        <div class="whale-add-form">
+          <input type="text" id="whale-addr-input" placeholder="Enter whale wallet address (0x\u2026)" spellcheck="false" autocomplete="off">
+          <button class="whale-add-btn" id="whale-add-btn">\uD83D\uDC33 Add Whale</button>
+        </div>
+        <div class="whale-list" id="whale-list">
+          <div class="whale-empty">No whale addresses configured yet. Add one above to start copy trading.</div>
+        </div>
+      </div>
+    </div>
 
     <!-- Basic Parameters (shown for strategies without advanced detail) -->
     <div class="strat-detail-section" id="sd-params-section" style="margin-bottom:20px;display:none">
@@ -2884,6 +3132,15 @@ function renderStrategyDetail(s){
     lwSection.innerHTML='<div class="strat-detail-section"><h4><span class="sd-icon">\uD83D\uDCB0</span> Active Wallets</h4><div class="empty">No wallets using this strategy yet</div></div>';
   }
 
+  /* Whale Address Management (copy_trade only) */
+  const whaleMgmt=$('#sd-whale-mgmt');
+  if(s.id==='copy_trade'){
+    whaleMgmt.style.display='block';
+    loadWhaleAddresses();
+  }else{
+    whaleMgmt.style.display='none';
+  }
+
   /* Basic Parameters (show for all strategies, especially useful for ones without advanced detail) */
   const paramsSection=$('#sd-params-section');
   const paramsEl=$('#sd-params');
@@ -2977,6 +3234,93 @@ $('#strat-back').addEventListener('click',()=>{
   $('#strat-grid').style.display='';
   $('#strat-list-title').style.display='';
 });
+
+/* ─── Whale Address Management ─── */
+async function loadWhaleAddresses(){
+  try{
+    const r=await fetch('/api/copy-trade/whales');
+    if(!r.ok)return;
+    const data=await r.json();
+    renderWhaleList(data);
+  }catch(e){console.error('Failed to load whale addresses',e)}
+}
+
+function renderWhaleList(data){
+  const list=$('#whale-list');
+  const countEl=$('#whale-count');
+  const addrs=data.addresses||[];
+  const perfArr=data.whalePerformance||[];
+  countEl.textContent='('+addrs.length+' tracked)';
+  if(addrs.length===0){
+    list.innerHTML='<div class="whale-empty">\uD83D\uDC33 No whale addresses configured yet. Add one above to start copy trading.</div>';
+    return;
+  }
+  list.innerHTML=perfArr.map(function(w){
+    const winPct=w.tradesCopied>0?((w.winRate*100).toFixed(0)+'%'):'—';
+    const pnlCls=w.totalPnlBps>0?'positive':w.totalPnlBps<0?'negative':'';
+    const statusCls=w.paused?'paused':'active';
+    const statusText=w.paused?'Paused':'Active';
+    const shortAddr=w.address.length>16?(w.address.slice(0,8)+'\u2026'+w.address.slice(-6)):w.address;
+    return '<div class="whale-item" data-addr="'+w.address+'">'+
+      '<div class="whale-item-left">'+
+        '<span class="whale-badge '+statusCls+'">'+statusText+'</span>'+
+        '<span class="whale-addr" title="'+w.address+'">'+shortAddr+'</span>'+
+      '</div>'+
+      '<div class="whale-stats">'+
+        '<span class="whale-stat"><span class="ws-val">'+w.tradesCopied+'</span> trades</span>'+
+        '<span class="whale-stat"><span class="ws-val">'+winPct+'</span> win</span>'+
+        '<span class="whale-stat '+pnlCls+'"><span class="ws-val">'+(w.totalPnlBps>0?'+':'')+w.totalPnlBps+'</span> bps</span>'+
+        '<span class="whale-stat"><span class="ws-val">'+w.consecutiveLosses+'</span> streak</span>'+
+      '</div>'+
+      '<button class="whale-remove-btn" onclick="removeWhale(\''+w.address+'\')">\u2716 Remove</button>'+
+    '</div>';
+  }).join('');
+}
+
+function showWhaleMsg(type,msg){
+  const el=$('#whale-msg');
+  el.className='whale-msg '+type;
+  el.textContent=msg;
+  setTimeout(()=>{el.style.display='none';el.className='whale-msg'},4000);
+}
+
+$('#whale-add-btn').addEventListener('click',async()=>{
+  const input=$('#whale-addr-input');
+  const address=input.value.trim();
+  if(!address){showWhaleMsg('err','Please enter a wallet address');return}
+  const btn=$('#whale-add-btn');
+  btn.disabled=true;
+  try{
+    const r=await fetch('/api/copy-trade/whales',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({address})});
+    const j=await r.json();
+    if(j.ok){
+      showWhaleMsg('ok','\uD83D\uDC33 '+j.message);
+      input.value='';
+      loadWhaleAddresses();
+    }else{
+      showWhaleMsg('err',j.error||'Failed to add address');
+    }
+  }catch(e){showWhaleMsg('err','Network error')}
+  btn.disabled=false;
+});
+
+$('#whale-addr-input').addEventListener('keydown',function(e){
+  if(e.key==='Enter'){e.preventDefault();$('#whale-add-btn').click()}
+});
+
+async function removeWhale(address){
+  if(!confirm('Remove whale address '+address.slice(0,12)+'\u2026 from copy trading?'))return;
+  try{
+    const r=await fetch('/api/copy-trade/whales/'+encodeURIComponent(address),{method:'DELETE'});
+    const j=await r.json();
+    if(j.ok){
+      showWhaleMsg('ok','\u2716 '+j.message);
+      loadWhaleAddresses();
+    }else{
+      showWhaleMsg('err',j.error||'Failed to remove');
+    }
+  }catch(e){showWhaleMsg('err','Network error')}
+}
 
 function useStrategy(stratId){
   /* Switch to wallets tab and pre-fill the strategy */

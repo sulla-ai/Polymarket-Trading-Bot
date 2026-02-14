@@ -819,6 +819,47 @@ export class CopyTradeStrategy extends BaseStrategy {
     };
   }
 
+  /* ━━━━━━━━━━━━━━ Runtime whale address management ━━━━━━━━━━━━━━ */
+
+  /** Add a whale address at runtime. Returns false if already tracked. */
+  addWhaleAddress(address: string): boolean {
+    const addr = address.toLowerCase().trim();
+    if (!addr || this.cfg.whale_addresses.map(a => a.toLowerCase()).includes(addr)) return false;
+    this.cfg.whale_addresses.push(addr);
+    if (!this.whalePerf.has(addr)) {
+      this.whalePerf.set(addr, {
+        address: addr,
+        tradesCopied: 0,
+        wins: 0,
+        losses: 0,
+        totalPnlBps: 0,
+        consecutiveLosses: 0,
+        pausedUntil: 0,
+        dailyVolumeUsd: 0,
+        dailyVolumeResetAt: this.nextDayReset(),
+      });
+    }
+    logger.info({ strategy: this.name, address: addr, totalWhales: this.cfg.whale_addresses.length }, 'Whale address added');
+    consoleLog.success('STRATEGY', `[copy_trade] Added whale ${addr.slice(0, 10)}… — now tracking ${this.cfg.whale_addresses.length} whale(s)`);
+    return true;
+  }
+
+  /** Remove a whale address at runtime. Returns false if not found. */
+  removeWhaleAddress(address: string): boolean {
+    const addr = address.toLowerCase().trim();
+    const idx = this.cfg.whale_addresses.findIndex(a => a.toLowerCase() === addr);
+    if (idx === -1) return false;
+    this.cfg.whale_addresses.splice(idx, 1);
+    logger.info({ strategy: this.name, address: addr, totalWhales: this.cfg.whale_addresses.length }, 'Whale address removed');
+    consoleLog.warn('STRATEGY', `[copy_trade] Removed whale ${addr.slice(0, 10)}… — now tracking ${this.cfg.whale_addresses.length} whale(s)`);
+    return true;
+  }
+
+  /** Get the list of tracked whale addresses. */
+  getWhaleAddresses(): string[] {
+    return [...this.cfg.whale_addresses];
+  }
+
   override shutdown(): void {
     logger.info({ strategy: this.name, totalCopied: this.getTotalTradesCopied() }, 'Copy Trade strategy shutdown');
   }

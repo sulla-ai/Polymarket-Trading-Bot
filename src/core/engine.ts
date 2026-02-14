@@ -157,6 +157,13 @@ export class Engine {
     return this.runners.length;
   }
 
+  /** Get all strategy instances that match a given strategy name (for runtime config). */
+  getStrategiesByName(strategyName: string): StrategyInterface[] {
+    return this.runners
+      .filter((r) => r.config === this.config.strategyConfig[strategyName] || r.strategy.name === strategyName)
+      .map((r) => r.strategy);
+  }
+
   /* ━━━━━━━━━━━━━━ Pause / Resume ━━━━━━━━━━━━━━ */
 
   /**
